@@ -51,60 +51,6 @@ int APS5_VABI sceIcuUnknown_wlK146pHnQ4_nid_no_patch() {
 }
 APS5_EXPORT("wlK146pHnQ4", sceIcuUnknown_wlK146pHnQ4_nid_no_patch);
 
-int APS5_VABI sceIcuUnknown_QO5iuHMTu2o_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("QO5iuHMTu2o", sceIcuUnknown_QO5iuHMTu2o_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_9TndABWg5Ds_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("9TndABWg5Ds", sceIcuUnknown_9TndABWg5Ds_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_tcf9HUwNaX0_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("tcf9HUwNaX0", sceIcuUnknown_tcf9HUwNaX0_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_rbyBjvpNuME_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("rbyBjvpNuME", sceIcuUnknown_rbyBjvpNuME_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_4JJDz6r_ghE_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("4JJDz6r-ghE", sceIcuUnknown_4JJDz6r_ghE_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_WPrktCwd_iw_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("WPrktCwd+iw", sceIcuUnknown_WPrktCwd_iw_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_sP5rfVNdvWM_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("sP5rfVNdvWM", sceIcuUnknown_sP5rfVNdvWM_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_c6eD2eDESGk_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("c6eD2eDESGk", sceIcuUnknown_c6eD2eDESGk_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_8y7DjDBJ6Nw_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("8y7DjDBJ6Nw", sceIcuUnknown_8y7DjDBJ6Nw_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_b7p2qTtZPno_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("b7p2qTtZPno", sceIcuUnknown_b7p2qTtZPno_nid_no_patch);
-
-int APS5_VABI sceIcuUnknown_RlZwfEuRDx8_nid_no_patch() {
-    NotImplemented_nid_no_patch(__func__);
-}
-APS5_EXPORT("RlZwfEuRDx8", sceIcuUnknown_RlZwfEuRDx8_nid_no_patch);
 
 int APS5_VABI sceIcuUnknown__xsbcqOIJmM_nid_no_patch() {
     NotImplemented_nid_no_patch(__func__);

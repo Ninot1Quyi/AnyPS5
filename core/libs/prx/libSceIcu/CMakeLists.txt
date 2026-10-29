@@ -1,7 +1,7 @@
 add_library(libSceIcu SHARED EXCLUDE_FROM_ALL Export.cpp Invariant.cpp Version.cpp Unescape.cpp)
 target_include_directories(libSceIcu PRIVATE ${LIBS_INCLUDE_DIR})
 configure_windows_unwind(libSceIcu)
-target_sources(libSceIcu PRIVATE CString.cpp)
+target_sources(libSceIcu PRIVATE CString.cpp Resources.cpp)
 
 if(BUILD_TESTING)
     add_test_executable(guest_icu_cstring_tests ${LIBS_INCLUDE_DIR}/tests/GuestIcuCString.cpp)
@@ -38,6 +38,19 @@ if(BUILD_TESTING)
     set_tests_properties(guest_icu_unescape PROPERTIES TIMEOUT 30)
     if(WIN32)
         set_tests_properties(guest_icu_unescape PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceIcu>")
+    endif()
+endif()
+
+if(BUILD_TESTING)
+    add_test_executable(guest_icu_resources_tests ${LIBS_INCLUDE_DIR}/tests/GuestIcuResources.cpp)
+    target_include_directories(guest_icu_resources_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_icu_resources_tests PRIVATE libSceIcu)
+    configure_windows_unwind(guest_icu_resources_tests)
+    add_test(NAME guest_icu_resources COMMAND guest_icu_resources_tests)
+    set_tests_properties(guest_icu_resources PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_icu_resources PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceIcu>")
     endif()
 endif()
