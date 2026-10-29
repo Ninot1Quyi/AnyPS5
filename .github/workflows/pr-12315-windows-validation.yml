@@ -1,21 +1,14 @@
-name: Fork PR 12315 Windows validation
-
-on:
-  push:
-    branches: [ci/pr-12315-windows-validation]
-
+name: Fork PR 12315 Windows diagnostics
 permissions:
   contents: read
-
 concurrency:
   group: fork-pr-12315-windows-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
   windows:
     name: Windows standard complete build and registered tests
     runs-on: windows-2022
-    timeout-minutes: 240
+    timeout-minutes: 300
     permissions:
       contents: read
     env:
@@ -26,183 +19,481 @@ jobs:
       WINLIBS_BIN: C:\winlibs\mingw64\bin
       CMAKE_BUILD_PARALLEL_LEVEL: 2
       CTEST_PARALLEL_LEVEL: 1
+      BASE_SHA: 3a2b91981651569163768854a1fcdc7193b6667b
     defaults:
       run:
         shell: pwsh
     steps:
-      - name: Initialize evidence and short build paths
-        run: |
-          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\logs\windows" | Out-Null
-          $python = (Get-Command python -CommandType Application).Source
-          "PYTHON_EXE=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          if (Test-Path W:\) { throw 'Drive W: is already in use' }
-          subst W: "$env:GITHUB_WORKSPACE"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          @(
-            "Candidate source: $env:SOURCE_SHA",
-            "Workflow commit: $env:GITHUB_SHA",
-            "Runner image: $env:ImageOS / $env:ImageVersion",
-            "Python: $python",
-            'All default AGC execution sources are enabled.',
-            'GPU-dependent tests may explicitly skip under the repository Windows policy; no GPU coverage is claimed.',
-            'This is independent fork evidence, not an upstream required check.',
-            'A successful skip audit permits documented device limitations; it does not certify zero skips.'
-          ) | Set-Content "$env:GITHUB_WORKSPACE\logs\windows\provenance.txt"
-          Get-ComputerInfo -Property WindowsProductName,WindowsVersion,OsVersion,CsNumberOfLogicalProcessors,CsTotalPhysicalMemory |
-            Out-File "$env:GITHUB_WORKSPACE\logs\windows\runner.txt"
-          Get-PSDrive -PSProvider FileSystem | Out-File "$env:GITHUB_WORKSPACE\logs\windows\disk.txt"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: Ninot1Quyi/AnyPS5
-          ref: 9b5e1b178bedf9fa32b5e0ebda410063a09b0b34
-          path: s
-          submodules: recursive
-          persist-credentials: false
-
-      - name: Verify checked-out source
-        working-directory: W:\s
-        run: |
-          $actual = (git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if ($actual -ne $env:SOURCE_SHA) { throw "Wrong source revision: $actual" }
-          git submodule status --recursive | Tee-Object -FilePath W:\logs\windows\submodules.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-
-
-      - name: Install the repository WinLibs toolchain
-        run: |
-          $archive = Join-Path $env:RUNNER_TEMP $env:WINLIBS_ZIP
-          $uri = "https://github.com/brechtsanders/winlibs_mingw/releases/download/$env:WINLIBS_RELEASE/$env:WINLIBS_ZIP"
-          Invoke-WebRequest -Uri $uri -OutFile $archive
-          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
-          "$actualHash  $env:WINLIBS_ZIP" | Set-Content W:\logs\windows\winlibs-sha256.txt
-          if ($actualHash -ne $env:WINLIBS_SHA256) { throw 'WinLibs archive SHA-256 mismatch' }
-          & 7z x $archive '-oC:/winlibs' | Out-File W:\logs\windows\winlibs-extract.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:WINLIBS_BIN | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          $bundle = @(
-            'C:\Program Files\Git\ucrt64\etc\ssl\certs\ca-bundle.crt',
-            'C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt'
-          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-          if (-not $bundle) { throw 'Git for Windows CA bundle not found' }
-          "SSL_CERT_FILE=$bundle" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          & "$env:WINLIBS_BIN\gcc.exe" --version | Out-File W:\logs\windows\toolchain.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "$env:WINLIBS_BIN\cmake.exe" --version | Out-File W:\logs\windows\toolchain.txt -Append
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-
-      - name: Configure every default test
-        id: configure
-        working-directory: W:\s
-        run: |
-          $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
-          & "$env:WINLIBS_BIN\cmake.exe" -S W:/s -B W:/b -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON `
-            "-DCMAKE_C_COMPILER=$env:WINLIBS_BIN/gcc.exe" `
-            "-DCMAKE_CXX_COMPILER=$env:WINLIBS_BIN/g++.exe" `
-            "-DCMAKE_MAKE_PROGRAM=$env:WINLIBS_BIN/ninja.exe" `
-            "-DPython3_EXECUTABLE=$env:PYTHON_EXE" 2>&1 |
-            Tee-Object -FilePath W:\logs\windows\configure.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $cache = Get-Content W:\b\CMakeCache.txt
-          $subset = @($cache | Where-Object { $_ -match '^ANYPS5_AGC_EXECUTION_TESTS:[^=]+=.+' })
-          if ($subset.Count -ne 0) { throw 'The build unexpectedly limits AGC execution tests' }
-
-      - name: Check test registration
-        working-directory: W:\s
-        run: |
-          & $env:PYTHON_EXE tools/check_test_registration.py W:/b 2>&1 |
-            Tee-Object -FilePath W:\logs\windows\registration.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build all default targets
-        id: build
-        working-directory: W:\s
-        run: |
-          $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
-          & "$env:WINLIBS_BIN\cmake.exe" --build W:/b 2>&1 |
-            Tee-Object -FilePath W:\logs\windows\build.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build all patched libraries
-        id: libs
-        working-directory: W:\s
-        run: |
-          $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
-          & "$env:WINLIBS_BIN\cmake.exe" --build W:/b --target libs 2>&1 |
-            Tee-Object -FilePath W:\logs\windows\libs.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Run every registered test
-        id: tests
-        working-directory: W:\s
-        run: |
-          $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
-          $env:PATH | Set-Content W:\logs\windows\test-runtime-path.txt
+    - name: Initialize evidence and short build paths
+      run: |
+        New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\logs\windows" | Out-Null
+        $python = (Get-Command python -CommandType Application).Source
+        "PYTHON_EXE=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        if (Test-Path W:\) { throw 'Drive W: is already in use' }
+        subst W: "$env:GITHUB_WORKSPACE"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        @(
+          "Candidate source: $env:SOURCE_SHA",
+          "Workflow commit: $env:GITHUB_SHA",
+          "Runner image: $env:ImageOS / $env:ImageVersion",
+          "Python: $python",
+          'All default AGC execution sources are enabled.',
+          'GPU-dependent tests may explicitly skip under the repository Windows policy; no GPU coverage is claimed.',
+          'This is independent fork evidence, not an upstream required check.',
+          'A successful skip audit permits documented device limitations; it does not certify zero skips.'
+        ) | Set-Content "$env:GITHUB_WORKSPACE\logs\windows\provenance.txt"
+        Get-ComputerInfo -Property WindowsProductName,WindowsVersion,OsVersion,CsNumberOfLogicalProcessors,CsTotalPhysicalMemory |
+          Out-File "$env:GITHUB_WORKSPACE\logs\windows\runner.txt"
+        Get-PSDrive -PSProvider FileSystem | Out-File "$env:GITHUB_WORKSPACE\logs\windows\disk.txt"
+    - name: Prepare public test diagnostics
+      run: "$reporter = @'\nimport argparse\nimport math\nfrom pathlib import Path\nimport re\nimport sys\nimport xml.etree.ElementTree as ET\n\nMAX_ANNOTATIONS =\
+        \ 10\nMAX_MESSAGE_BYTES = 15000\nANSI = re.compile(r\"\\x1b\\[[0-?]*[ -/]*[@-~]\")\nSENSITIVE = re.compile(\n    r\"(?i)authorization|cookie|bearer|password|passwd|private[\
+        \ _-]?key|\"\n    r\"-----BEGIN|\\b[A-Z_]*(?:TOKEN|SECRET|CREDENTIAL|API_KEY)[A-Z_]*\\b|\"\n    r\"[a-z][a-z0-9+.-]*://[^\\s/]*@|\"\n    r\"\\b(?:gh[pousr]_|github_pat_|AKIA|ASIA)[A-Za-z0-9_]+\"\
+        \n)\nDIAGNOSTIC = re.compile(\n    r\"(?i)\\berror\\b|\\bassert(?:ion)?\\b|\\bfailed\\b|\\bfailure\\b|\"\n    r\"\\bexception\\b|\\btimeout\\b|\\btimed out\\\
+        b|\\bdeadline\\b|\"\n    r\"\\bterminate\\b|\\babort(?:ed)?\\b|\\bwhat\\(\\):|\"\n    r\"^AGC graphics:|^FAILED:|^\\[gpu\\] recorded batch\"\n)\nASSIGNMENT\
+        \ = re.compile(r\"^[A-Z_][A-Z0-9_]*\\s*=\")\nCTEST_SKIP = re.compile(r\"SKIP_RETURN_CODE=\\d+|SKIP_REGULAR_EXPRESSION_MATCHED\", re.I)\nSECRET_VALUE = re.compile(r\"\
+        [a-z][a-z0-9+.-]*://[^\\s/]*@|\\b(?:gh[pousr]_|github_pat_|AKIA|ASIA)[A-Za-z0-9_]+\", re.I)\n\n\ndef safe(value, limit=400, redact=True):\n    value = ANSI.sub(\"\
+        \", str(value))\n    value = \"\".join(c for c in value if c in \"\\n\\r\\t\" or ord(c) >= 32)\n    value = value.replace(\"\\x7f\", \"\")\n    if SECRET_VALUE.search(value)\
+        \ or (redact and SENSITIVE.search(value)):\n        return \"[potentially sensitive content omitted]\"\n    return value if len(value) <= limit else value[:limit]\
+        \ + \" ... [truncated]\"\n\n\ndef single(value, limit):\n    return safe(value, limit, redact=False).replace(\"\\n\", \" \").replace(\"\\r\", \" \")\n\n\n\
+        def escape(value, attribute=False):\n    value = value.replace(\"%\", \"%25\").replace(\"\\r\", \"%0D\").replace(\"\\n\", \"%0A\")\n    if attribute:\n  \
+        \      value = value.replace(\":\", \"%3A\").replace(\",\", \"%2C\")\n    return value\n\n\ndef emit(level, title, message, total):\n    encoded = escape(message).encode(\"\
+        utf-8\")\n    if len(encoded) > MAX_MESSAGE_BYTES:\n        suffix = escape(\n            f\"\\n[annotation truncated; {total} cases in this category in total;\
+        \ \"\n            \"see the complete JUnit artifact and job summary for all cases]\"\n        ).encode(\"utf-8\")\n        encoded = encoded[:MAX_MESSAGE_BYTES\
+        \ - len(suffix)].decode(\"utf-8\", \"ignore\").encode(\"utf-8\") + suffix\n    print(\"::\" + level + \" title=\" + escape(safe(title, 160), True) + \"::\"\
+        \ + encoded.decode(\"utf-8\"))\n\n\ndef read_report(path):\n    root = ET.parse(path).getroot()\n    if root.tag not in (\"testsuite\", \"testsuites\"):\n\
+        \        raise ValueError(\"Unexpected JUnit root\")\n    records = []\n    for case in root.iter(\"testcase\"):\n        problems = [node for kind in (\"\
+        failure\", \"error\") for node in case.findall(kind)]\n        skip = case.find(\"skipped\")\n        recognized_skip = skip is not None and CTEST_SKIP.fullmatch(skip.get(\"\
+        message\", \"\").strip())\n        not_run = case.get(\"status\") == \"disabled\" or (case.get(\"status\") == \"notrun\" and not recognized_skip)\n      \
+        \  if problems:\n            state = \"failed\"\n        elif not_run:\n            state = \"not_run\"\n        elif skip is not None:\n            state\
+        \ = \"skipped\"\n        elif case.get(\"status\") in (\"fail\", \"error\"):\n            state = \"failed\"\n        else:\n            state = \"passed\"\
+        \n        name = case.get(\"name\", \"<unnamed>\")\n        reason = \"; \".join(safe(node.get(\"message\", \"failure\"), 180) for node in problems) or state\n\
+        \        diagnostic = []\n        output = \"\\n\".join(case.findtext(channel) or \"\" for channel in (\"system-out\", \"system-err\"))\n        for line\
+        \ in output[-32000:].splitlines():\n            line = ANSI.sub(\"\", line).strip()\n            if DIAGNOSTIC.search(line) and not SENSITIVE.search(line)\
+        \ and not ASSIGNMENT.search(line):\n                diagnostic.append(safe(line, 400))\n        records.append(dict(name=name, state=state, reason=reason,\
+        \ diagnostic=diagnostic[-3:]))\n    return records\n\n\ndef notice_counts(title, records):\n    counts = {key: sum(item[\"state\"] == key for item in records)\
+        \ for key in (\"passed\", \"failed\", \"skipped\", \"not_run\")}\n    message = f\"total={len(records)}; \" + \"; \".join(f\"{key}={value}\" for key, value\
+        \ in counts.items())\n    emit(\"notice\", title, message + \". Skips remain unverified and require the separate repository skip audit.\", len(records))\n\
+        \n\ndef unique_index(records):\n    index = {}\n    for item in records:\n        name = item[\"name\"]\n        index[name] = item if name not in index else\
+        \ None\n    return index\n\n\ndef publish_errors(title, entries):\n    if not entries:\n        return\n    width = math.ceil(len(entries) / MAX_ANNOTATIONS)\n\
+        \    for offset in range(0, len(entries), width):\n        group = entries[offset:offset + width]\n        lines = [f\"{len(entries)} failure/comparison records\
+        \ total; records {offset + 1}-{offset + len(group)}:\"]\n        lines.extend(item[0] for item in group)\n        for name, diagnostic in group:\n       \
+        \     if diagnostic:\n                lines.extend([\"Diagnostics for \" + name, *diagnostic])\n        emit(\"error\", title, \"\\n\".join(lines), len(entries))\n\
+        \n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument(\"--report\", type=Path, required=True)\n    parser.add_argument(\"--platform\"\
+        , required=True)\n    parser.add_argument(\"--source\", required=True)\n    parser.add_argument(\"--baseline\", type=Path)\n    parser.add_argument(\"--baseline-source\"\
+        )\n    parser.add_argument(\"--require-passed\", action=\"append\", default=[])\n    args = parser.parse_args()\n    if bool(args.baseline) != bool(args.baseline_source):\n\
+        \        parser.error(\"--baseline and --baseline-source must be supplied together\")\n    title = f\"CTest {single(args.platform, 40)} source {single(args.source,\
+        \ 100)}\"\n    try:\n        records = read_report(args.report)\n    except (OSError, ET.ParseError, ValueError):\n        emit(\"notice\", title, \"total=unavailable;\
+        \ report missing or malformed\", 0)\n        for name in dict.fromkeys(args.require_passed):\n            emit(\"notice\", title, \"Required test \" + single(name,\
+        \ 320) + \": missing (report unavailable)\", 1)\n        emit(\"error\", title, \"Missing or malformed JUnit report; full validation is incomplete.\", 0)\n\
+        \        return 1\n    notice_counts(title, records)\n    if not records:\n        for name in dict.fromkeys(args.require_passed):\n            emit(\"notice\"\
+        , title, \"Required test \" + single(name, 320) + \": missing\", 1)\n        emit(\"error\", title, \"JUnit contains no test cases; full validation is incomplete.\"\
+        , 0)\n        return 1\n    candidate = unique_index(records)\n    failures = [item for item in records if item[\"state\"] in (\"failed\", \"not_run\")]\n\
+        \    required_entries = []\n    required_failed = False\n    for name in dict.fromkeys(args.require_passed):\n        item = candidate.get(name)\n       \
+        \ state = item[\"state\"] if item is not None else \"missing or ambiguous\"\n        emit(\"notice\", title, \"Required test \" + single(name, 320) + \":\
+        \ \" + state, 1)\n        if state != \"passed\":\n            required_failed = True\n            if item not in failures:\n                required_entries.append((\"\
+        Required test \" + single(name, 320) + \" \u2014 \" + state, []))\n    entries = []\n    if args.baseline is None:\n        entries = [(single(item[\"name\"\
+        ], 320) + \" \u2014 \" + item[\"reason\"], item[\"diagnostic\"]) for item in failures]\n        entries.extend(required_entries)\n        publish_errors(title,\
+        \ entries)\n        return int(bool(failures) or required_failed)\n    baseline_title = f\"CTest {single(args.platform, 40)} baseline {single(args.baseline_source,\
+        \ 100)}\"\n    baseline_valid = True\n    try:\n        baseline_records = read_report(args.baseline)\n    except (OSError, ET.ParseError, ValueError):\n\
+        \        baseline_records = []\n        baseline_valid = False\n        emit(\"notice\", baseline_title, \"total=unavailable; report missing or malformed\"\
+        , 0)\n    else:\n        notice_counts(baseline_title, baseline_records)\n        baseline_valid = bool(baseline_records)\n    baseline = unique_index(baseline_records)\n\
+        \    categories = dict(both_failed=0, candidate_only_failed=0, incomparable=0)\n    for item in failures:\n        previous = baseline.get(item[\"name\"])\n\
+        \        if item[\"state\"] == \"not_run\" or previous is None or previous[\"state\"] in (\"skipped\", \"not_run\"):\n            category = \"incomparable\"\
+        \n        elif previous[\"state\"] == \"failed\":\n            category = \"both_failed\"\n        else:\n            category = \"candidate_only_failed\"\
+        \n        categories[category] += 1\n        previous_state = previous[\"state\"] if previous is not None else \"missing or ambiguous\"\n        label = f\"\
+        [{category}] \" + single(item[\"name\"], 320) + f\" \u2014 candidate={item['state']}; baseline={previous_state}; \" + item[\"reason\"]\n        diagnostic\
+        \ = [\"candidate: \" + line for line in item[\"diagnostic\"]]\n        if previous is not None and previous[\"state\"] == \"failed\":\n            diagnostic.extend(\"\
+        baseline: \" + line for line in previous[\"diagnostic\"])\n        entries.append((label, diagnostic))\n    if not baseline_valid:\n        entries.append((\"\
+        Baseline report missing, malformed, or empty; attribution is incomplete\", []))\n    entries.extend(required_entries)\n    comparison = \"; \".join(f\"{key}={value}\"\
+        \ for key, value in categories.items())\n    emit(\"notice\", title, comparison + \". both_failed means the same named test failed in both runs; it does not\
+        \ prove identical causes. Comparison-only exit status never replaces the original candidate CTest/skip gates.\", len(failures))\n    publish_errors(title,\
+        \ entries)\n    return int(not baseline_valid or required_failed or categories[\"candidate_only_failed\"] > 0 or categories[\"incomparable\"] > 0)\n\n\nif\
+        \ __name__ == \"__main__\":\n    sys.exit(main())\n'@\n$path = Join-Path $env:RUNNER_TEMP 'cireport.py'\n[System.IO.File]::WriteAllText($path, $reporter,\
+        \ [System.Text.UTF8Encoding]::new($false))\n"
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: Ninot1Quyi/AnyPS5
+        ref: 9b5e1b178bedf9fa32b5e0ebda410063a09b0b34
+        path: s
+        fetch-depth: 2
+        submodules: recursive
+        persist-credentials: false
+    - name: Verify checked-out source
+      working-directory: W:\s
+      run: |
+        $actual = (git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if ($actual -ne $env:SOURCE_SHA) { throw "Wrong source revision: $actual" }
+        git submodule status --recursive | Tee-Object -FilePath W:\logs\windows\submodules.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Install the repository WinLibs toolchain
+      run: |
+        $archive = Join-Path $env:RUNNER_TEMP $env:WINLIBS_ZIP
+        $uri = "https://github.com/brechtsanders/winlibs_mingw/releases/download/$env:WINLIBS_RELEASE/$env:WINLIBS_ZIP"
+        Invoke-WebRequest -Uri $uri -OutFile $archive
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+        "$actualHash  $env:WINLIBS_ZIP" | Set-Content W:\logs\windows\winlibs-sha256.txt
+        if ($actualHash -ne $env:WINLIBS_SHA256) { throw 'WinLibs archive SHA-256 mismatch' }
+        & 7z x $archive '-oC:/winlibs' | Out-File W:\logs\windows\winlibs-extract.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $env:WINLIBS_BIN | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        $bundle = @(
+          'C:\Program Files\Git\ucrt64\etc\ssl\certs\ca-bundle.crt',
+          'C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt'
+        ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not $bundle) { throw 'Git for Windows CA bundle not found' }
+        "SSL_CERT_FILE=$bundle" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        & "$env:WINLIBS_BIN\gcc.exe" --version | Out-File W:\logs\windows\toolchain.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & "$env:WINLIBS_BIN\cmake.exe" --version | Out-File W:\logs\windows\toolchain.txt -Append
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Configure every default test
+      id: configure
+      working-directory: W:\s
+      run: |
+        $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+        & "$env:WINLIBS_BIN\cmake.exe" -S W:/s -B W:/b -G Ninja `
+          -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON `
+          "-DCMAKE_C_COMPILER=$env:WINLIBS_BIN/gcc.exe" `
+          "-DCMAKE_CXX_COMPILER=$env:WINLIBS_BIN/g++.exe" `
+          "-DCMAKE_MAKE_PROGRAM=$env:WINLIBS_BIN/ninja.exe" `
+          "-DPython3_EXECUTABLE=$env:PYTHON_EXE" 2>&1 |
+          Tee-Object -FilePath W:\logs\windows\configure.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $cache = Get-Content W:\b\CMakeCache.txt
+        $subset = @($cache | Where-Object { $_ -match '^ANYPS5_AGC_EXECUTION_TESTS:[^=]+=.+' })
+        if ($subset.Count -ne 0) { throw 'The build unexpectedly limits AGC execution tests' }
+    - name: Check test registration
+      working-directory: W:\s
+      run: |
+        & $env:PYTHON_EXE tools/check_test_registration.py W:/b 2>&1 |
+          Tee-Object -FilePath W:\logs\windows\registration.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Build all default targets
+      id: build
+      working-directory: W:\s
+      run: |
+        $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+        & "$env:WINLIBS_BIN\cmake.exe" --build W:/b 2>&1 |
+          Tee-Object -FilePath W:\logs\windows\build.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Build all patched libraries
+      id: libs
+      working-directory: W:\s
+      run: |
+        $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+        & "$env:WINLIBS_BIN\cmake.exe" --build W:/b --target libs 2>&1 |
+          Tee-Object -FilePath W:\logs\windows\libs.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Run every registered candidate test
+      id: tests
+      working-directory: W:\s
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+        $logDir = 'W:\logs\windows'
+        New-Item -ItemType Directory -Force $logDir | Out-Null
+        $env:PATH | Set-Content "$logDir\test-runtime-path.txt"
+        Remove-Item -LiteralPath W:\b\ctest.xml,W:\b\ctest.log -ErrorAction SilentlyContinue
+        & "$env:WINLIBS_BIN\ctest.exe" --version | Set-Content "$logDir\ctest-version.txt"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & "$env:WINLIBS_BIN\ctest.exe" --test-dir W:/b --show-only=json-v1 > W:\b\test-manifest.json
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $ctestExit = 125
+        $complete = $false
+        try {
           & "$env:WINLIBS_BIN\ctest.exe" --test-dir W:/b -V --output-on-failure `
             --timeout 120 --parallel 1 --no-tests=error `
             --output-log W:/b/ctest.log --output-junit W:/b/ctest.xml 2>&1 |
-            Tee-Object -FilePath W:\logs\windows\ctest-console.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Audit skipped and missing tests
-        if: ${{ always() && steps.tests.outcome != 'skipped' }}
-        working-directory: W:\s
-        run: |
-          & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests --list 2>&1 |
-            Tee-Object -FilePath W:\logs\windows\skipped-tests.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests 2>&1 |
-            Tee-Object -FilePath W:\logs\windows\skip-audit.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Summarize actual coverage
-        if: ${{ always() }}
-        run: |
-          @(
-            '## Independent Windows validation',
-            "Candidate source: ``$env:SOURCE_SHA``",
-            'The full default build, patched libraries and all registered CTests are requested.',
-            'GPU-dependent tests may explicitly skip under the repository Windows policy; this run does not claim GPU coverage.',
-            'This is fork evidence, not an upstream required check or PS5 hardware validation.'
-          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          $junit = Join-Path $env:GITHUB_WORKSPACE 'b\ctest.xml'
-          if (Test-Path -LiteralPath $junit) {
-            [xml]$report = Get-Content -LiteralPath $junit -Raw
-            $cases = @($report.SelectNodes('//testcase'))
-            $skips = @($report.SelectNodes('//testcase[skipped]'))
-            $failures = @($report.SelectNodes('//testcase[failure or error]'))
-            $unexecuted = @($report.SelectNodes('//testcase[@status="disabled" or (@status="notrun" and not(skipped))]'))
-            "JUnit: $($cases.Count) testcases, $($failures.Count) failures/errors, $($skips.Count) skips, $($unexecuted.Count) disabled/unexplained notrun." |
-              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-            if ($skips.Count -gt 0) {
-              'These are recorded coverage gaps; a passing skip policy does not mean zero skipped tests.' |
-                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-              $skips | ForEach-Object { "- ``$($_.name)``" } |
-                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-            }
-            if ($cases.Count -eq 0 -or $unexecuted.Count -gt 0 -or $failures.Count -gt 0) {
-              throw 'The report does not demonstrate a complete successful test run'
-            }
-          } else {
-            'No JUnit report was produced. The complete test suite has not been demonstrated to pass.' |
-              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-            throw 'JUnit report is missing'
+            Tee-Object -FilePath "$logDir\ctest-console.txt"
+          $ctestExit = $LASTEXITCODE
+        } finally {
+          $ctestExit | Set-Content "$logDir\ctest-exit-code.txt"
+          "exit_code=$ctestExit" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          try {
+            [xml]$report = Get-Content W:\b\ctest.xml -Raw
+            $manifest = Get-Content W:\b\test-manifest.json -Raw | ConvertFrom-Json
+            $expectedNames = @($manifest.tests | ForEach-Object { [string]$_.name } | Sort-Object)
+            $actualNames = @($report.SelectNodes('//testcase') | ForEach-Object { [string]$_.name } | Sort-Object)
+            $unexpectedNotRun = @($report.SelectNodes('//testcase[@status="disabled" or (@status="notrun" and not(skipped))]'))
+            $difference = if ($expectedNames.Count -gt 0 -and $actualNames.Count -gt 0) {
+              @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames)
+            } else { @('missing tests') }
+            $complete = $expectedNames.Count -gt 0 -and $expectedNames.Count -eq $actualNames.Count -and $difference.Count -eq 0 -and $unexpectedNotRun.Count -eq 0
+          } catch {
+            $_.Exception.Message | Set-Content "$logDir\junit-integrity-error.txt"
           }
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        if: ${{ always() }}
-        with:
-          name: windows-standard-complete-9b5e1b1-${{ github.run_attempt }}
-          path: |
-            logs/windows/**
-            b/ctest.log
-            b/ctest.xml
-            b/Testing/Temporary/**
-            b/CMakeFiles/CMakeConfigureLog.yaml
-            b/CMakeCache.txt
-          if-no-files-found: error
-          retention-days: 14
+          $complete.ToString().ToLowerInvariant() | Set-Content "$logDir\report-complete.txt"
+          "report_complete=$($complete.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Output "::notice title=CTest candidate process::exit_code=$ctestExit; complete_report=$complete"
+        }
+        if ($ctestExit -ne 0) { exit $ctestExit }
+        if (-not $complete) { throw 'CTest did not produce a complete report for every registered test' }
+    - name: Audit skipped and missing tests
+      if: ${{ always() && steps.tests.outcome != 'skipped' }}
+      working-directory: W:\s
+      run: |
+        & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests --list 2>&1 |
+          Tee-Object -FilePath W:\logs\windows\skipped-tests.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests 2>&1 |
+          Tee-Object -FilePath W:\logs\windows\skip-audit.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Preserve candidate evidence before any baseline checkout
+      id: candidate_evidence
+      if: ${{ !cancelled() && steps.libs.outcome == 'success' && steps.tests.outcome != 'skipped' }}
+      working-directory: W:\s
+      run: |
+        $destination = 'W:\evidence\candidate'
+        New-Item -ItemType Directory -Force "$destination\logs" | Out-Null
+        $actual = (git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $actual | Set-Content "$destination\source-sha.txt"
+        $env:GITHUB_SHA | Set-Content "$destination\workflow-sha.txt"
+        Copy-Item -Path 'W:\logs\windows\*' -Destination "$destination\logs" -Recurse -Force
+        foreach ($path in @('W:\b\ctest.xml','W:\b\ctest.log','W:\b\test-manifest.json','W:\b\CMakeCache.txt','W:\b\CMakeFiles\CMakeConfigureLog.yaml')) {
+          if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $destination -Force }
+        }
+        if (Test-Path W:\b\Testing\Temporary) {
+          Copy-Item -LiteralPath W:\b\Testing\Temporary -Destination "$destination\TestingTemporary" -Recurse -Force
+        }
+        git submodule status --recursive | Set-Content "$destination\submodules.txt"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Publish candidate JUnit diagnostics
+      if: ${{ !cancelled() && steps.candidate_evidence.outcome == 'success' }}
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        $reporter = Join-Path $env:RUNNER_TEMP 'cireport.py'
+        if (-not (Test-Path -LiteralPath $reporter)) { throw 'The root-inlined diagnostic reporter is missing' }
+        & $env:PYTHON_EXE $reporter --report 'W:\evidence\candidate\ctest.xml' --platform windows --source $env:SOURCE_SHA --require-passed guest_crypto_memcmp --require-passed guest_libressl3_digest --require-passed guest_libressl3_asn1 --require-passed guest_libressl3_key_reference --require-passed guest_libressl3_object_parser --require-passed public_headers 2>&1 |
+          Tee-Object -FilePath 'W:\evidence\candidate\diagnostics.txt'
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Check out the original base for same-runner comparison
+      id: baseline_prepare
+      if: ${{ !cancelled() && steps.libs.outcome == 'success' && steps.tests.outcome == 'failure' && steps.tests.outputs.report_complete == 'true' && steps.candidate_evidence.outcome
+        == 'success' }}
+      working-directory: W:\s
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        New-Item -ItemType Directory -Force W:\logs\windows-baseline | Out-Null
+        if (-not (Test-Path -LiteralPath W:\evidence\candidate\ctest.xml)) { throw 'Candidate evidence was not preserved' }
+        if (-not (Test-Path -LiteralPath "$env:RUNNER_TEMP\cireport.py")) { throw 'Reporter must survive the source checkout in RUNNER_TEMP' }
+        $parent = (git rev-parse "$($env:SOURCE_SHA)^").Trim()
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if ($parent -ne $env:BASE_SHA) { throw "Candidate parent is not the requested baseline: $parent" }
+        $parent | Set-Content W:\logs\windows-baseline\verified-parent.txt
+        $candidateLinks = @(git ls-tree -r $env:SOURCE_SHA | Where-Object { $_ -match '^160000 commit ' })
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $baseLinks = @(git ls-tree -r $env:BASE_SHA | Where-Object { $_ -match '^160000 commit ' })
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $linkDifference = @(Compare-Object -ReferenceObject $candidateLinks -DifferenceObject $baseLinks)
+        $linkDifference | Out-File W:\logs\windows-baseline\submodule-difference.txt
+        $moduleFileDifference = @(git diff $env:SOURCE_SHA $env:BASE_SHA -- .gitmodules)
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $moduleFileDifference | Set-Content W:\logs\windows-baseline\gitmodules-difference.txt
+        Remove-Item -LiteralPath W:\b\ctest.xml,W:\b\ctest.log,W:\b\test-manifest.json,W:\b\Testing\Temporary -Recurse -Force -ErrorAction SilentlyContinue
+        git checkout --detach $env:BASE_SHA 2>&1 | Tee-Object -FilePath W:\logs\windows-baseline\checkout.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if ($linkDifference.Count -gt 0 -or $moduleFileDifference.Count -gt 0) {
+          git submodule sync --recursive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git submodule update --init --recursive --depth 1 --jobs 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        $submodules = @(git submodule status --recursive)
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $submodules | Set-Content W:\logs\windows-baseline\submodules.txt
+        if (@($submodules | Where-Object { $_ -match '^[-+U]' }).Count -gt 0) { throw 'Baseline submodules are not at their recorded commits' }
+        $actual = (git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if ($actual -ne $env:BASE_SHA) { throw "Unexpected baseline source: $actual" }
+        @(
+          "Candidate source: $env:SOURCE_SHA",
+          "Baseline source: $actual",
+          'Same runner, WinLibs toolchain, source path and build directory.',
+          'CMake reconfiguration and complete default/libs builds rerun after checkout.',
+          'The existing build directory is reused incrementally; no test selection is applied.'
+        ) | Set-Content W:\logs\windows-baseline\provenance.txt
+    - name: Configure every default baseline test
+      id: baseline_configure
+      working-directory: W:\s
+      run: |
+        $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+        & "$env:WINLIBS_BIN\cmake.exe" -S W:/s -B W:/b -G Ninja `
+          -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON `
+          "-DCMAKE_C_COMPILER=$env:WINLIBS_BIN/gcc.exe" `
+          "-DCMAKE_CXX_COMPILER=$env:WINLIBS_BIN/g++.exe" `
+          "-DCMAKE_MAKE_PROGRAM=$env:WINLIBS_BIN/ninja.exe" `
+          "-DPython3_EXECUTABLE=$env:PYTHON_EXE" 2>&1 |
+          Tee-Object -FilePath W:\logs\windows-baseline\configure.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $cache = Get-Content W:\b\CMakeCache.txt
+        $subset = @($cache | Where-Object { $_ -match '^ANYPS5_AGC_EXECUTION_TESTS:[^=]+=.+' })
+        if ($subset.Count -ne 0) { throw 'The build unexpectedly limits AGC execution tests' }
+      if: ${{ !cancelled() && steps.baseline_prepare.outcome == 'success' }}
+    - name: Check baseline test registration
+      working-directory: W:\s
+      run: |
+        & $env:PYTHON_EXE tools/check_test_registration.py W:/b 2>&1 |
+          Tee-Object -FilePath W:\logs\windows-baseline\registration.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      id: baseline_registration
+      if: ${{ !cancelled() && steps.baseline_configure.outcome == 'success' }}
+    - name: Build all default baseline targets
+      id: baseline_build
+      working-directory: W:\s
+      run: |
+        $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+        & "$env:WINLIBS_BIN\cmake.exe" --build W:/b 2>&1 |
+          Tee-Object -FilePath W:\logs\windows-baseline\build.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      if: ${{ !cancelled() && steps.baseline_registration.outcome == 'success' }}
+    - name: Build all patched baseline libraries
+      id: baseline_libs
+      working-directory: W:\s
+      run: |
+        $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+        & "$env:WINLIBS_BIN\cmake.exe" --build W:/b --target libs 2>&1 |
+          Tee-Object -FilePath W:\logs\windows-baseline\libs.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      if: ${{ !cancelled() && steps.baseline_build.outcome == 'success' }}
+    - name: Run every registered baseline test
+      id: baseline_tests
+      if: ${{ !cancelled() && steps.baseline_libs.outcome == 'success' }}
+      working-directory: W:\s
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+        $logDir = 'W:\logs\windows-baseline'
+        New-Item -ItemType Directory -Force $logDir | Out-Null
+        $env:PATH | Set-Content "$logDir\test-runtime-path.txt"
+        Remove-Item -LiteralPath W:\b\ctest.xml,W:\b\ctest.log -ErrorAction SilentlyContinue
+        & "$env:WINLIBS_BIN\ctest.exe" --version | Set-Content "$logDir\ctest-version.txt"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & "$env:WINLIBS_BIN\ctest.exe" --test-dir W:/b --show-only=json-v1 > W:\b\test-manifest.json
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $ctestExit = 125
+        $complete = $false
+        try {
+          & "$env:WINLIBS_BIN\ctest.exe" --test-dir W:/b -V --output-on-failure `
+            --timeout 120 --parallel 1 --no-tests=error `
+            --output-log W:/b/ctest.log --output-junit W:/b/ctest.xml 2>&1 |
+            Tee-Object -FilePath "$logDir\ctest-console.txt"
+          $ctestExit = $LASTEXITCODE
+        } finally {
+          $ctestExit | Set-Content "$logDir\ctest-exit-code.txt"
+          "exit_code=$ctestExit" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          try {
+            [xml]$report = Get-Content W:\b\ctest.xml -Raw
+            $manifest = Get-Content W:\b\test-manifest.json -Raw | ConvertFrom-Json
+            $expectedNames = @($manifest.tests | ForEach-Object { [string]$_.name } | Sort-Object)
+            $actualNames = @($report.SelectNodes('//testcase') | ForEach-Object { [string]$_.name } | Sort-Object)
+            $unexpectedNotRun = @($report.SelectNodes('//testcase[@status="disabled" or (@status="notrun" and not(skipped))]'))
+            $difference = if ($expectedNames.Count -gt 0 -and $actualNames.Count -gt 0) {
+              @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames)
+            } else { @('missing tests') }
+            $complete = $expectedNames.Count -gt 0 -and $expectedNames.Count -eq $actualNames.Count -and $difference.Count -eq 0 -and $unexpectedNotRun.Count -eq 0
+          } catch {
+            $_.Exception.Message | Set-Content "$logDir\junit-integrity-error.txt"
+          }
+          $complete.ToString().ToLowerInvariant() | Set-Content "$logDir\report-complete.txt"
+          "report_complete=$($complete.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Output "::notice title=CTest baseline process::exit_code=$ctestExit; complete_report=$complete"
+        }
+        if ($ctestExit -ne 0) { exit $ctestExit }
+        if (-not $complete) { throw 'CTest did not produce a complete report for every registered test' }
+    - name: Audit baseline skipped and missing tests
+      if: ${{ !cancelled() && steps.baseline_libs.outcome == 'success' && steps.baseline_tests.outcome != 'skipped' }}
+      working-directory: W:\s
+      run: |
+        & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests --list 2>&1 |
+          Tee-Object -FilePath W:\logs\windows-baseline\skipped-tests.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests 2>&1 |
+          Tee-Object -FilePath W:\logs\windows-baseline\skip-audit.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Preserve baseline evidence
+      id: baseline_evidence
+      if: ${{ !cancelled() && steps.baseline_prepare.outcome == 'success' }}
+      working-directory: W:\s
+      run: |
+        $destination = 'W:\evidence\baseline'
+        New-Item -ItemType Directory -Force "$destination\logs" | Out-Null
+        $actual = (git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $actual | Set-Content "$destination\source-sha.txt"
+        $env:GITHUB_SHA | Set-Content "$destination\workflow-sha.txt"
+        Copy-Item -Path 'W:\logs\windows-baseline\*' -Destination "$destination\logs" -Recurse -Force
+        foreach ($path in @('W:\b\ctest.xml','W:\b\ctest.log','W:\b\test-manifest.json','W:\b\CMakeCache.txt','W:\b\CMakeFiles\CMakeConfigureLog.yaml')) {
+          if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $destination -Force }
+        }
+        if (Test-Path W:\b\Testing\Temporary) {
+          Copy-Item -LiteralPath W:\b\Testing\Temporary -Destination "$destination\TestingTemporary" -Recurse -Force
+        }
+        git submodule status --recursive | Set-Content "$destination\submodules.txt"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Publish baseline JUnit diagnostics
+      if: ${{ !cancelled() && steps.baseline_evidence.outcome == 'success' }}
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        $reporter = Join-Path $env:RUNNER_TEMP 'cireport.py'
+        if (-not (Test-Path -LiteralPath $reporter)) { throw 'The root-inlined diagnostic reporter is missing' }
+        & $env:PYTHON_EXE $reporter --report 'W:\evidence\baseline\ctest.xml' --platform windows --source $env:BASE_SHA 2>&1 |
+          Tee-Object -FilePath 'W:\evidence\baseline\diagnostics.txt'
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Record candidate and baseline outcomes
+      if: ${{ always() }}
+      env:
+        CANDIDATE_BUILD: ${{ steps.build.outcome }}
+        CANDIDATE_LIBS: ${{ steps.libs.outcome }}
+        CANDIDATE_TESTS: ${{ steps.tests.outcome }}
+        CANDIDATE_EXIT: ${{ steps.tests.outputs.exit_code }}
+        CANDIDATE_REPORT: ${{ steps.tests.outputs.report_complete }}
+        BASELINE_BUILD: ${{ steps.baseline_build.outcome }}
+        BASELINE_LIBS: ${{ steps.baseline_libs.outcome }}
+        BASELINE_TESTS: ${{ steps.baseline_tests.outcome }}
+        BASELINE_EXIT: ${{ steps.baseline_tests.outputs.exit_code }}
+        BASELINE_REPORT: ${{ steps.baseline_tests.outputs.report_complete }}
+      run: |
+        $lines = @(
+          '## Independent Windows candidate and baseline validation',
+          "Candidate: $env:SOURCE_SHA",
+          "Baseline: $env:BASE_SHA",
+          "Candidate build=$env:CANDIDATE_BUILD; libs=$env:CANDIDATE_LIBS; tests=$env:CANDIDATE_TESTS; CTest exit=$env:CANDIDATE_EXIT; complete report=$env:CANDIDATE_REPORT",
+          "Baseline build=$env:BASELINE_BUILD; libs=$env:BASELINE_LIBS; tests=$env:BASELINE_TESTS; CTest exit=$env:BASELINE_EXIT; complete report=$env:BASELINE_REPORT",
+          'Candidate failure remains a job failure, even when the baseline reproduces it.',
+          'All registered tests are requested for each attempted revision; no exclusions or reduced AGC list are used.',
+          'Allowed hardware skips are reported by the separate skip audit and do not establish GPU coverage.',
+          'The baseline reuses this runner and the reconfigured build directory incrementally.'
+        )
+        $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+        $lines | Set-Content "$env:GITHUB_WORKSPACE\logs\windows\comparison-status.txt"
+    - name: Compare candidate failures with the same-runner baseline
+      if: ${{ !cancelled() && steps.baseline_evidence.outcome == 'success' && steps.baseline_tests.outputs.report_complete == 'true' }}
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        $reporter = Join-Path $env:RUNNER_TEMP 'cireport.py'
+        & $env:PYTHON_EXE $reporter --report 'W:\evidence\candidate\ctest.xml' --baseline 'W:\evidence\baseline\ctest.xml' --baseline-source $env:BASE_SHA --platform windows --source $env:SOURCE_SHA --require-passed guest_crypto_memcmp --require-passed guest_libressl3_digest --require-passed guest_libressl3_asn1 --require-passed guest_libressl3_key_reference --require-passed guest_libressl3_object_parser --require-passed public_headers 2>&1 |
+          Tee-Object -FilePath 'W:\evidence\comparison.txt'
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: ${{ always() }}
+      with:
+        name: windows-diagnostics-9b5e1b1-${{ github.run_attempt }}
+        path: |
+          evidence/**
+          logs/windows/**
+          logs/windows-baseline/**
+          b/ctest.log
+          b/ctest.xml
+          b/test-manifest.json
+          b/Testing/Temporary/**
+          b/CMakeFiles/CMakeConfigureLog.yaml
+          b/CMakeCache.txt
+        if-no-files-found: error
+        retention-days: 14
+'on':
+  push:
+    branches:
+    - ci/pr-12315-windows-validation
