@@ -1,0 +1,208 @@
+name: Fork PR 12315 Windows validation
+
+on:
+  push:
+    branches: [ci/pr-12315-windows-validation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-pr-12315-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows standard complete build and registered tests
+    runs-on: windows-2022
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: 9b5e1b178bedf9fa32b5e0ebda410063a09b0b34
+      WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
+      WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
+      WINLIBS_SHA256: cb2fbad6162540cdf5e1facdce08d4dac359e8cf64f7f696a99274291763b815
+      WINLIBS_BIN: C:\winlibs\mingw64\bin
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      CTEST_PARALLEL_LEVEL: 1
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize evidence and short build paths
+        run: |
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\logs\windows" | Out-Null
+          $python = (Get-Command python -CommandType Application).Source
+          "PYTHON_EXE=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if (Test-Path W:\) { throw 'Drive W: is already in use' }
+          subst W: "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @(
+            "Candidate source: $env:SOURCE_SHA",
+            "Workflow commit: $env:GITHUB_SHA",
+            "Runner image: $env:ImageOS / $env:ImageVersion",
+            "Python: $python",
+            'All default AGC execution sources are enabled.',
+            'GPU-dependent tests may explicitly skip under the repository Windows policy; no GPU coverage is claimed.',
+            'This is independent fork evidence, not an upstream required check.',
+            'A successful skip audit permits documented device limitations; it does not certify zero skips.'
+          ) | Set-Content "$env:GITHUB_WORKSPACE\logs\windows\provenance.txt"
+          Get-ComputerInfo -Property WindowsProductName,WindowsVersion,OsVersion,CsNumberOfLogicalProcessors,CsTotalPhysicalMemory |
+            Out-File "$env:GITHUB_WORKSPACE\logs\windows\runner.txt"
+          Get-PSDrive -PSProvider FileSystem | Out-File "$env:GITHUB_WORKSPACE\logs\windows\disk.txt"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Ninot1Quyi/AnyPS5
+          ref: 9b5e1b178bedf9fa32b5e0ebda410063a09b0b34
+          path: s
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify checked-out source
+        working-directory: W:\s
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($actual -ne $env:SOURCE_SHA) { throw "Wrong source revision: $actual" }
+          git submodule status --recursive | Tee-Object -FilePath W:\logs\windows\submodules.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+
+
+      - name: Install the repository WinLibs toolchain
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP $env:WINLIBS_ZIP
+          $uri = "https://github.com/brechtsanders/winlibs_mingw/releases/download/$env:WINLIBS_RELEASE/$env:WINLIBS_ZIP"
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          "$actualHash  $env:WINLIBS_ZIP" | Set-Content W:\logs\windows\winlibs-sha256.txt
+          if ($actualHash -ne $env:WINLIBS_SHA256) { throw 'WinLibs archive SHA-256 mismatch' }
+          & 7z x $archive '-oC:/winlibs' | Out-File W:\logs\windows\winlibs-extract.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:WINLIBS_BIN | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $bundle = @(
+            'C:\Program Files\Git\ucrt64\etc\ssl\certs\ca-bundle.crt',
+            'C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt'
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $bundle) { throw 'Git for Windows CA bundle not found' }
+          "SSL_CERT_FILE=$bundle" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & "$env:WINLIBS_BIN\gcc.exe" --version | Out-File W:\logs\windows\toolchain.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:WINLIBS_BIN\cmake.exe" --version | Out-File W:\logs\windows\toolchain.txt -Append
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+
+      - name: Configure every default test
+        id: configure
+        working-directory: W:\s
+        run: |
+          $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+          & "$env:WINLIBS_BIN\cmake.exe" -S W:/s -B W:/b -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON `
+            "-DCMAKE_C_COMPILER=$env:WINLIBS_BIN/gcc.exe" `
+            "-DCMAKE_CXX_COMPILER=$env:WINLIBS_BIN/g++.exe" `
+            "-DCMAKE_MAKE_PROGRAM=$env:WINLIBS_BIN/ninja.exe" `
+            "-DPython3_EXECUTABLE=$env:PYTHON_EXE" 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\configure.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cache = Get-Content W:\b\CMakeCache.txt
+          $subset = @($cache | Where-Object { $_ -match '^ANYPS5_AGC_EXECUTION_TESTS:[^=]+=.+' })
+          if ($subset.Count -ne 0) { throw 'The build unexpectedly limits AGC execution tests' }
+
+      - name: Check test registration
+        working-directory: W:\s
+        run: |
+          & $env:PYTHON_EXE tools/check_test_registration.py W:/b 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\registration.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build all default targets
+        id: build
+        working-directory: W:\s
+        run: |
+          $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+          & "$env:WINLIBS_BIN\cmake.exe" --build W:/b 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build all patched libraries
+        id: libs
+        working-directory: W:\s
+        run: |
+          $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+          & "$env:WINLIBS_BIN\cmake.exe" --build W:/b --target libs 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\libs.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run every registered test
+        id: tests
+        working-directory: W:\s
+        run: |
+          $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
+          $env:PATH | Set-Content W:\logs\windows\test-runtime-path.txt
+          & "$env:WINLIBS_BIN\ctest.exe" --test-dir W:/b -V --output-on-failure `
+            --timeout 120 --parallel 1 --no-tests=error `
+            --output-log W:/b/ctest.log --output-junit W:/b/ctest.xml 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\ctest-console.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Audit skipped and missing tests
+        if: ${{ always() && steps.tests.outcome != 'skipped' }}
+        working-directory: W:\s
+        run: |
+          & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests --list 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\skipped-tests.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\skip-audit.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Summarize actual coverage
+        if: ${{ always() }}
+        run: |
+          @(
+            '## Independent Windows validation',
+            "Candidate source: ``$env:SOURCE_SHA``",
+            'The full default build, patched libraries and all registered CTests are requested.',
+            'GPU-dependent tests may explicitly skip under the repository Windows policy; this run does not claim GPU coverage.',
+            'This is fork evidence, not an upstream required check or PS5 hardware validation.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          $junit = Join-Path $env:GITHUB_WORKSPACE 'b\ctest.xml'
+          if (Test-Path -LiteralPath $junit) {
+            [xml]$report = Get-Content -LiteralPath $junit -Raw
+            $cases = @($report.SelectNodes('//testcase'))
+            $skips = @($report.SelectNodes('//testcase[skipped]'))
+            $failures = @($report.SelectNodes('//testcase[failure or error]'))
+            $unexecuted = @($report.SelectNodes('//testcase[@status="disabled" or (@status="notrun" and not(skipped))]'))
+            "JUnit: $($cases.Count) testcases, $($failures.Count) failures/errors, $($skips.Count) skips, $($unexecuted.Count) disabled/unexplained notrun." |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            if ($skips.Count -gt 0) {
+              'These are recorded coverage gaps; a passing skip policy does not mean zero skipped tests.' |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              $skips | ForEach-Object { "- ``$($_.name)``" } |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            }
+            if ($cases.Count -eq 0 -or $unexecuted.Count -gt 0 -or $failures.Count -gt 0) {
+              throw 'The report does not demonstrate a complete successful test run'
+            }
+          } else {
+            'No JUnit report was produced. The complete test suite has not been demonstrated to pass.' |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            throw 'JUnit report is missing'
+          }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ always() }}
+        with:
+          name: windows-standard-complete-9b5e1b1-${{ github.run_attempt }}
+          path: |
+            logs/windows/**
+            b/ctest.log
+            b/ctest.xml
+            b/Testing/Temporary/**
+            b/CMakeFiles/CMakeConfigureLog.yaml
+            b/CMakeCache.txt
+          if-no-files-found: error
+          retention-days: 14
