@@ -1,0 +1,487 @@
+name: Fork PR 12315 full validation
+
+on:
+  push:
+    branches: [ci/pr-12315-full-validation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-pr-12315-full-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: Fork Linux full validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: 9b5e1b178bedf9fa32b5e0ebda410063a09b0b34
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      CTEST_PARALLEL_LEVEL: 1
+      ANYPS5_REQUIRE_VULKAN: 1
+      GALLIUM_OVERRIDE_CPU_CAPS: avx
+    steps:
+      - name: Initialize validation logs
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fork-linux-logs"
+          {
+            printf 'Candidate source: %s\nWorkflow commit: %s\n' "$SOURCE_SHA" "$GITHUB_SHA"
+            printf 'This is an independent fork validation, not an upstream required check or console validation.\n'
+            uname -a
+            nproc
+            free -h
+            df -h "$GITHUB_WORKSPACE"
+          } 2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/environment.log"
+      - name: Check out the fixed candidate and submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 9b5e1b178bedf9fa32b5e0ebda410063a09b0b34
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify source identity
+        run: |
+          set -euo pipefail
+          {
+            actual=$(git rev-parse HEAD)
+            printf 'Checked-out source: %s\n' "$actual"
+            test "$actual" = "$SOURCE_SHA"
+            git submodule status --recursive
+          } 2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/source.log"
+      - name: Install build and runtime dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update 2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/dependencies.log"
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils cmake ninja-build pkg-config python3 \
+            libx11-dev libxext-dev libxrandr-dev \
+            libwayland-dev libxkbcommon-dev libegl-dev libdecor-0-dev \
+            libpipewire-0.3-dev libpulse-dev libasound2-dev \
+            libvulkan1 mesa-vulkan-drivers vulkan-tools vulkan-validationlayers \
+            2>&1 | tee -a "$RUNNER_TEMP/fork-linux-logs/dependencies.log"
+          {
+            gcc --version
+            g++ --version
+            cmake --version
+            ninja --version
+            python3 --version
+            dpkg-query -W mesa-vulkan-drivers linux-libc-dev
+            df -h "$GITHUB_WORKSPACE"
+          } 2>&1 | tee -a "$RUNNER_TEMP/fork-linux-logs/environment.log"
+      - name: Require working Linux asynchronous write watching
+        run: |
+          set -euo pipefail
+          unset APS5_NO_WRITE_WATCH
+          sudo sysctl -w vm.unprivileged_userfaultfd=1 \
+            2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/write-watch.log"
+          cat > "$RUNNER_TEMP/write-watch-probe.cpp" <<'CPP'
+          #include "prx/libc/include/GuestWriteWatch.hpp"
+          #include <cstdio>
+          int main() {
+            if (!GuestWriteWatch::GuestWriteWatchAvailable_nid_postfix()) {
+              std::fputs("ERROR: The runner cannot execute the production Linux write-watch backend. Linux 6.7+, userfaultfd asynchronous/unpopulated write protection, and working PAGEMAP_SCAN are required. Validation cannot continue with that coverage missing.\n", stderr);
+              return 1;
+            }
+            std::puts("Production Linux write-watch probe passed, including the backend's dirty-page scan and reset checks.");
+            return 0;
+          }
+          CPP
+          g++ -std=c++20 -O2 -pthread -Icore/libs \
+            core/libs/prx/libc/src/GuestWriteWatch.cpp \
+            "$RUNNER_TEMP/write-watch-probe.cpp" \
+            -o "$RUNNER_TEMP/write-watch-probe" \
+            2>&1 | tee -a "$RUNNER_TEMP/fork-linux-logs/write-watch.log"
+          "$RUNNER_TEMP/write-watch-probe" \
+            2>&1 | tee -a "$RUNNER_TEMP/fork-linux-logs/write-watch.log"
+      - name: Require lavapipe and record Vulkan capabilities
+        run: |
+          set -euo pipefail
+          icds=(/usr/share/vulkan/icd.d/lvp_icd*.json)
+          if [ "${#icds[@]}" -ne 1 ] || [ ! -f "${icds[0]}" ]; then
+            printf 'ERROR: Expected exactly one lavapipe ICD manifest.\n' \
+              | tee "$RUNNER_TEMP/fork-linux-logs/vulkan.log"
+            exit 1
+          fi
+          export VK_DRIVER_FILES="${icds[0]}"
+          printf 'VK_DRIVER_FILES=%s\n' "$VK_DRIVER_FILES" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          printf 'XDG_RUNTIME_DIR=%s\n' "$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          vulkaninfo --summary 2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/vulkan.log"
+      - name: Configure the complete project and every test
+        run: |
+          set -euo pipefail
+          umask 022
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+            -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+            -DANYPS5_ENABLE_SPIRV_TOOLS=ON \
+            2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/configure.log"
+      - name: Check test registration
+        run: |
+          set -euo pipefail
+          python3 tools/check_test_registration.py build \
+            2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/test-registration.log"
+      - name: Build the default project and tests
+        run: |
+          set -euo pipefail
+          cmake --build build \
+            2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/build.log"
+      - name: Build all patched libraries
+        run: |
+          set -euo pipefail
+          cmake --build build --target libs \
+            2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/libs.log"
+      - name: Run every registered CTest
+        id: tests
+        run: |
+          set -euo pipefail
+          ctest --test-dir build -V --output-on-failure --timeout 120 \
+            --no-tests=error \
+            --output-log "$GITHUB_WORKSPACE/build/ctest.log" \
+            --output-junit "$GITHUB_WORKSPACE/build/ctest.xml" \
+            2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/ctest-console.log"
+      - name: Report all JUnit outcomes and skip reasons
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/test-summary.log"
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+
+          report = Path("build/ctest.xml")
+          if not report.is_file():
+              message = "ERROR: No CTest JUnit report was produced; full validation is incomplete."
+              print(message)
+              with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+                  summary.write(message + "\n")
+              sys.exit(1)
+          root = ET.parse(report).getroot()
+          cases = list(root.iter("testcase"))
+          if not cases:
+              raise SystemExit("ERROR: The CTest JUnit report contains no test cases.")
+          outcomes = {"passed": [], "failed": [], "skipped": [], "not_run": []}
+          details = []
+          for case in cases:
+              name = case.get("name", "<unnamed>")
+              skipped = case.find("skipped")
+              if case.find("failure") is not None or case.find("error") is not None:
+                  outcomes["failed"].append(name)
+              elif skipped is not None:
+                  outcomes["skipped"].append(name)
+                  output = "\n".join(case.findtext(channel) or "" for channel in ("system-out", "system-err"))
+                  reasons = [line.strip() for line in output.splitlines() if re.search(r"skipped,", line, re.I)]
+                  reason = " | ".join(reasons) or skipped.get("message") or skipped.text or "No reason recorded"
+                  details.append(f"- {name}: {reason}")
+              elif case.get("status") in ("disabled", "notrun"):
+                  outcomes["not_run"].append(name)
+              else:
+                  outcomes["passed"].append(name)
+          lines = [
+              "Fork Linux full validation",
+              "",
+              f"Candidate source: `{os.environ['SOURCE_SHA']}`",
+              f"Workflow commit: `{os.environ['GITHUB_SHA']}`",
+              "This run uses a GitHub-hosted Linux VM and Mesa lavapipe; it is not an upstream required check or console validation.",
+              "",
+              f"JUnit cases: {len(cases)}; passed: {len(outcomes['passed'])}; failed: {len(outcomes['failed'])}; skipped: {len(outcomes['skipped'])}; not run: {len(outcomes['not_run'])}.",
+              "Skipped cases remain unverified; the following step applies the repository's existing hardware-skip policy.",
+              "",
+              *details,
+          ]
+          if outcomes["failed"]:
+              lines.append("Failed cases: " + ", ".join(outcomes["failed"]))
+          if outcomes["not_run"]:
+              lines.append("Cases not run: " + ", ".join(outcomes["not_run"]))
+          text = "\n".join(lines) + "\n"
+          print(text, end="")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+              summary.write(text)
+          if outcomes["failed"] or outcomes["not_run"]:
+              raise SystemExit(1)
+          PY
+      - name: Enforce the repository hardware-skip policy
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f build/ctest.xml ]; then
+            printf 'ERROR: Missing CTest JUnit report; skip-policy validation cannot pass.\n' \
+              | tee "$RUNNER_TEMP/fork-linux-logs/check-skips.log"
+            exit 1
+          fi
+          python3 tools/check_skips.py build/ctest.xml --require-tests \
+            2>&1 | tee "$RUNNER_TEMP/fork-linux-logs/check-skips.log"
+      - name: Upload validation evidence even after failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: fork-linux-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/fork-linux-logs
+            ${{ runner.temp }}/write-watch-probe.cpp
+            build/ctest.log
+            build/ctest.xml
+            build/Testing/Temporary/LastTest.log
+            build/Testing/Temporary/LastTestsFailed.log
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeConfigureLog.yaml
+
+  windows:
+    name: Windows complete build and registered tests
+    runs-on: windows-2022
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: 9b5e1b178bedf9fa32b5e0ebda410063a09b0b34
+      WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
+      WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
+      WINLIBS_SHA256: cb2fbad6162540cdf5e1facdce08d4dac359e8cf64f7f696a99274291763b815
+      WINLIBS_BIN: C:\winlibs\mingw64\bin
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      CTEST_PARALLEL_LEVEL: 1
+      GALLIUM_OVERRIDE_CPU_CAPS: avx
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize evidence and short build paths
+        run: |
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\logs\windows" | Out-Null
+          $python = (Get-Command python -CommandType Application).Source
+          "PYTHON_EXE=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if (Test-Path W:\) { throw 'Drive W: is already in use' }
+          subst W: "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @(
+            "Candidate source: $env:SOURCE_SHA",
+            "Workflow commit: $env:GITHUB_SHA",
+            "Runner image: $env:ImageOS / $env:ImageVersion",
+            "Python: $python",
+            'All default AGC execution sources are enabled.',
+            'This is independent fork evidence, not an upstream required check.',
+            'A successful skip audit permits documented device limitations; it does not certify zero skips.'
+          ) | Set-Content "$env:GITHUB_WORKSPACE\logs\windows\provenance.txt"
+          Get-ComputerInfo -Property WindowsProductName,WindowsVersion,OsVersion,CsNumberOfLogicalProcessors,CsTotalPhysicalMemory |
+            Out-File "$env:GITHUB_WORKSPACE\logs\windows\runner.txt"
+          Get-PSDrive -PSProvider FileSystem | Out-File "$env:GITHUB_WORKSPACE\logs\windows\disk.txt"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: Ninot1Quyi/AnyPS5
+          ref: 9b5e1b178bedf9fa32b5e0ebda410063a09b0b34
+          path: s
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify checked-out source
+        working-directory: W:\s
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($actual -ne $env:SOURCE_SHA) { throw "Wrong source revision: $actual" }
+          git submodule status --recursive | Tee-Object -FilePath W:\logs\windows\submodules.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install signed official MSYS2 software Vulkan packages
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-mesa
+            mingw-w64-clang-x86_64-vulkan-tools
+
+      - name: Record installed Vulkan packages
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          evidence="$(cygpath -u "$GITHUB_WORKSPACE")/logs/windows"
+          pacman -Q | tee "$evidence/msys2-packages.txt"
+          pacman -Ql mingw-w64-clang-x86_64-mesa | tee "$evidence/mesa-files.txt"
+
+      - name: Install the repository WinLibs toolchain
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP $env:WINLIBS_ZIP
+          $uri = "https://github.com/brechtsanders/winlibs_mingw/releases/download/$env:WINLIBS_RELEASE/$env:WINLIBS_ZIP"
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          "$actualHash  $env:WINLIBS_ZIP" | Set-Content W:\logs\windows\winlibs-sha256.txt
+          if ($actualHash -ne $env:WINLIBS_SHA256) { throw 'WinLibs archive SHA-256 mismatch' }
+          & 7z x $archive '-oC:/winlibs' | Out-File W:\logs\windows\winlibs-extract.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:WINLIBS_BIN | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $bundle = @(
+            'C:\Program Files\Git\ucrt64\etc\ssl\certs\ca-bundle.crt',
+            'C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt'
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $bundle) { throw 'Git for Windows CA bundle not found' }
+          "SSL_CERT_FILE=$bundle" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & "$env:WINLIBS_BIN\gcc.exe" --version | Out-File W:\logs\windows\toolchain.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:WINLIBS_BIN\cmake.exe" --version | Out-File W:\logs\windows\toolchain.txt -Append
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Require the official Mesa CPU Vulkan driver
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $mesaRoot = Join-Path $env:MSYS2_LOCATION 'clang64'
+          $mesaBin = Join-Path $mesaRoot 'bin'
+          $icdRoot = Join-Path $mesaRoot 'share\vulkan\icd.d'
+          $icds = @(Get-ChildItem -LiteralPath $icdRoot -Filter '*lvp*.json' -File)
+          if ($icds.Count -ne 1) { throw "Expected one lavapipe ICD, found $($icds.Count)" }
+          $icd = $icds[0].FullName
+          Get-Content -LiteralPath $icd | Set-Content W:\logs\windows\lavapipe-icd.json
+          $manifest = Get-Content -LiteralPath $icd -Raw | ConvertFrom-Json
+          $library = [string]$manifest.ICD.library_path
+          if (-not $library) { throw 'The lavapipe ICD has no library_path' }
+          $candidates = if ([IO.Path]::IsPathRooted($library)) {
+            @($library)
+          } else {
+            @((Join-Path $icds[0].DirectoryName $library), (Join-Path $mesaBin $library))
+          }
+          $libraries = @($candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            ForEach-Object { (Resolve-Path -LiteralPath $_).Path } | Sort-Object -Unique)
+          if ($libraries.Count -ne 1) { throw 'Cannot uniquely resolve the installed lavapipe ICD library' }
+          Get-FileHash -LiteralPath $libraries[0] -Algorithm SHA256 |
+            Format-List | Out-File W:\logs\windows\lavapipe-library.txt
+          $collisions = @(Get-ChildItem -LiteralPath $env:WINLIBS_BIN -Filter '*.dll' -File |
+            Where-Object { Test-Path -LiteralPath (Join-Path $mesaBin $_.Name) })
+          $collisions.Name | Out-File W:\logs\windows\runtime-dll-collisions.txt
+          "MESA_BIN=$mesaBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VK_DRIVER_FILES=$icd" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $env:PATH = "$mesaBin;$env:WINLIBS_BIN;$env:PATH"
+          $env:VK_DRIVER_FILES = $icd
+          & "$mesaBin\vulkaninfo.exe" --summary 2>&1 | Tee-Object -FilePath W:\logs\windows\vulkaninfo.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report = Get-Content W:\logs\windows\vulkaninfo.txt -Raw
+          if ($report -notmatch '(?i)llvmpipe|lavapipe') { throw 'vulkaninfo did not report the CPU Vulkan driver' }
+
+      - name: Configure every default test
+        id: configure
+        working-directory: W:\s
+        run: |
+          $env:PATH = "$env:WINLIBS_BIN;$env:MESA_BIN;$env:PATH"
+          & "$env:WINLIBS_BIN\cmake.exe" -S W:/s -B W:/b -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON `
+            "-DCMAKE_C_COMPILER=$env:WINLIBS_BIN/gcc.exe" `
+            "-DCMAKE_CXX_COMPILER=$env:WINLIBS_BIN/g++.exe" `
+            "-DCMAKE_MAKE_PROGRAM=$env:WINLIBS_BIN/ninja.exe" `
+            "-DPython3_EXECUTABLE=$env:PYTHON_EXE" `
+            -DANYPS5_ENABLE_SPIRV_TOOLS=ON 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\configure.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cache = Get-Content W:\b\CMakeCache.txt
+          $subset = @($cache | Where-Object { $_ -match '^ANYPS5_AGC_EXECUTION_TESTS:[^=]+=.+' })
+          if ($subset.Count -ne 0) { throw 'The build unexpectedly limits AGC execution tests' }
+
+      - name: Check test registration
+        working-directory: W:\s
+        run: |
+          & $env:PYTHON_EXE tools/check_test_registration.py W:/b 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\registration.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build all default targets
+        id: build
+        working-directory: W:\s
+        run: |
+          $env:PATH = "$env:WINLIBS_BIN;$env:MESA_BIN;$env:PATH"
+          & "$env:WINLIBS_BIN\cmake.exe" --build W:/b 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build all patched libraries
+        id: libs
+        working-directory: W:\s
+        run: |
+          $env:PATH = "$env:WINLIBS_BIN;$env:MESA_BIN;$env:PATH"
+          & "$env:WINLIBS_BIN\cmake.exe" --build W:/b --target libs 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\libs.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run every registered test
+        id: tests
+        env:
+          ANYPS5_REQUIRE_VULKAN: 1
+          ANYPS5_NO_SHADER_CACHE: 1
+        working-directory: W:\s
+        run: |
+          $env:PATH = "$env:MESA_BIN;$env:WINLIBS_BIN;$env:PATH"
+          $env:PATH | Set-Content W:\logs\windows\test-runtime-path.txt
+          & "$env:WINLIBS_BIN\ctest.exe" --test-dir W:/b -V --output-on-failure `
+            --timeout 120 --parallel 1 --no-tests=error `
+            --output-log W:/b/ctest.log --output-junit W:/b/ctest.xml 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\ctest-console.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Audit skipped and missing tests
+        if: ${{ always() && steps.tests.outcome != 'skipped' }}
+        working-directory: W:\s
+        run: |
+          & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests --list 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\skipped-tests.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:PYTHON_EXE tools/check_skips.py W:/b/ctest.xml --job windows --require-tests 2>&1 |
+            Tee-Object -FilePath W:\logs\windows\skip-audit.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Summarize actual coverage
+        if: ${{ always() }}
+        run: |
+          @(
+            '## Independent Windows validation',
+            "Candidate source: ``$env:SOURCE_SHA``",
+            'The full default build, patched libraries and all registered CTests are requested.',
+            'This is fork evidence, not an upstream required check or PS5 hardware validation.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          $junit = Join-Path $env:GITHUB_WORKSPACE 'b\ctest.xml'
+          if (Test-Path -LiteralPath $junit) {
+            [xml]$report = Get-Content -LiteralPath $junit -Raw
+            $cases = @($report.SelectNodes('//testcase'))
+            $skips = @($report.SelectNodes('//testcase[skipped]'))
+            $failures = @($report.SelectNodes('//testcase[failure or error]'))
+            $unexecuted = @($report.SelectNodes('//testcase[@status="disabled" or (@status="notrun" and not(skipped))]'))
+            "JUnit: $($cases.Count) testcases, $($failures.Count) failures/errors, $($skips.Count) skips, $($unexecuted.Count) disabled/unexplained notrun." |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            if ($skips.Count -gt 0) {
+              'These are recorded coverage gaps; a passing skip policy does not mean zero skipped tests.' |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              $skips | ForEach-Object { "- ``$($_.name)``" } |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            }
+            if ($cases.Count -eq 0 -or $unexecuted.Count -gt 0 -or $failures.Count -gt 0) {
+              throw 'The report does not demonstrate a complete successful test run'
+            }
+          } else {
+            'No JUnit report was produced. The complete test suite has not been demonstrated to pass.' |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            throw 'JUnit report is missing'
+          }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: windows-complete-9b5e1b1-${{ github.run_attempt }}
+          path: |
+            logs/windows/**
+            b/ctest.log
+            b/ctest.xml
+            b/Testing/Temporary/**
+            b/CMakeFiles/CMakeConfigureLog.yaml
+            b/CMakeCache.txt
+          if-no-files-found: error
+          retention-days: 14
