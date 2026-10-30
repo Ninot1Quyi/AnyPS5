@@ -3,6 +3,7 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -11,6 +12,14 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+
+static_assert(sizeof(LibreSslAsn1Object) == 40);
+static_assert(offsetof(LibreSslAsn1Object, shortName) == 0);
+static_assert(offsetof(LibreSslAsn1Object, longName) == 8);
+static_assert(offsetof(LibreSslAsn1Object, nid) == 16);
+static_assert(offsetof(LibreSslAsn1Object, length) == 20);
+static_assert(offsetof(LibreSslAsn1Object, data) == 24);
+static_assert(offsetof(LibreSslAsn1Object, flags) == 32);
 
 namespace {
 
