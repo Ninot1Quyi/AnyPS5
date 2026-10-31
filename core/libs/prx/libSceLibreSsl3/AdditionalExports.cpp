@@ -31,10 +31,6 @@ int APS5_VABI EVP_CIPHER_key_length_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
 
-int APS5_VABI EVP_MD_CTX_md_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
 int APS5_VABI EVP_PKEY_CTX_free_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
@@ -176,18 +172,6 @@ int APS5_VABI i2d_SSL_SESSION_nid_postfix() {
 }
 
 int APS5_VABI i2d_X509_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
-int APS5_VABI sk_free_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
-int APS5_VABI sk_new_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
-int APS5_VABI sk_push_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
 
