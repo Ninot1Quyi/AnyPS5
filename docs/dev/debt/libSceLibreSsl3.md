@@ -1,12 +1,18 @@
 # libSceLibreSsl3 technical debt
 
-### Unknown function info
-
-- [libSceLibreSsl3 pending exports](../../../core/libs/prx/libSceLibreSsl3/Export.cpp) - 77 named callable exports, excluding `CRYPTO_memcmp`, `MD5`, `SHA1`, `d2i_ASN1_INTEGER`, `EVP_PKEY_up_ref`, `EC_KEY_up_ref`, `RSA_up_ref`, `EVP_PKEY_get0_RSA`, `EVP_PKEY_get0_DSA` and `EVP_PKEY_get0_DH`, remain unimplemented from the [PS5 3.20 export table](https://github.com/DNNDHH/PS5-3.20_Libs/blob/b2a77c09cd71c01f34c790cfbe98c751a13262ad/libSceLibreSsl3.c), cross-checked against the same module in PS5 firmware 13.60. Their signatures and behaviour are unverified; the declarations use the no-parameter unknown-signature convention and throw through `NotImplemented_nid_no_patch`.
-
 ### Functional
 
-- [BN_dup and BN_clear_free](../../../core/libs/prx/libSceLibreSsl3/src/BignumLifetime.cpp) have no console ABI, allocator or error-queue verification. The 24-byte BIGNUM layout, 64-bit limbs, flags and allocation/error behavior follow LibreSSL 4.0.0 [bn_lib.c](https://github.com/libressl/openbsd/blob/ce488b78e0bd994780569df718596b9776ff681a/src/lib/libcrypto/bn/bn_lib.c) and `bn_local.h`. Copies use the guest heap and preserve only the constant-time flag; release clears the full owned limb capacity and respects borrowed storage and caller-owned structures. Invalid positive limb counts with missing or insufficient storage, and release of owned limbs with a negative capacity, throw instead of accessing invalid memory. The parent library's BIGNUM constructors remain unimplemented, so interoperability with them is not validated. Closes when: compared with console layouts, ownership and errors.
+- [BN_dup](../../../core/libs/prx/libSceLibreSsl3/src/BignumDuplicate.cpp) has no console ABI, allocator or error-queue verification. The 24-byte BIGNUM layout, 64-bit limbs, flags and allocation/error behavior follow LibreSSL 4.0.0 [bn_lib.c](https://github.com/libressl/openbsd/blob/ce488b78e0bd994780569df718596b9776ff681a/src/lib/libcrypto/bn/bn_lib.c) and `bn_local.h`. Copies use the guest heap and preserve only the constant-time flag. Positive limb counts with missing or insufficient storage throw instead of accessing invalid memory. Parent-library BIGNUM constructors and destructors remain unimplemented, so their allocator interoperability is not validated. Closes when: compared with console layouts, ownership and errors.
+
+- [OpenSSL_version](../../../core/libs/prx/libSceLibreSsl3/Export.cpp) - other firmware revisions are unverified. Selectors 0 through 5 follow the public firmware 13.40 measurements in [discussion #8981](https://github.com/boykopovar/AnyPS5/discussions/8981#discussioncomment-19111214); unknown selectors follow LibreSSL 4.0.0 and return `not available`. No independent console test was run.
+
+- [ERR_load_crypto_strings and ERR_peek_last_error](../../../core/libs/prx/libSceLibreSsl3/Export.cpp) have no console execution verification. [Firmware 13.42 modules run on a PC](https://github.com/boykopovar/AnyPS5/pull/9535#issuecomment-6407060914) retained numeric-only output after loaders and matched queue order/overflow; whether the two firmware modules share a queue was not tested. This implementation reads libSceLibreSsl's calling-thread queue. `ERR_print_errors_cb` remains throwing because guest thread identifiers and diagnostic metadata are unverified.
+
+### Unknown function info
+
+- [libSceLibreSsl3 pending exports](../../../core/libs/prx/libSceLibreSsl3/Export.cpp) - 76 named callable exports, excluding `CRYPTO_memcmp`, `MD5`, `SHA1`, `d2i_ASN1_INTEGER`, `EVP_PKEY_up_ref`, `EC_KEY_up_ref`, `RSA_up_ref`, `EVP_PKEY_get0_RSA`, `EVP_PKEY_get0_DSA`, `EVP_PKEY_get0_DH` and `OpenSSL_version`, remain unimplemented from the [PS5 3.20 export table](https://github.com/DNNDHH/PS5-3.20_Libs/blob/b2a77c09cd71c01f34c790cfbe98c751a13262ad/libSceLibreSsl3.c), cross-checked against the same module in PS5 firmware 13.60. Their signatures and behaviour are unverified; the declarations use the no-parameter unknown-signature convention and throw through `NotImplemented_nid_no_patch`.
+
+### Functional
 
 - [ASN.1 integer decoding](../../../core/libs/prx/libSceLibreSsl3/src/IntegerDecoder.cpp) - nothing is checked on a console, and the console's application-heap ABI is unverified. Rejections, allocation failures, their error codes and the old output follow [13.42 native-PC evidence](https://github.com/boykopovar/AnyPS5/pull/10948#issuecomment-6412137728) from a recording allocator. Nonnegative null input faults natively and throws here. Error combinations the evidence does not cover and content over `INT_MAX` bytes follow [LibreSSL 4.0.0](https://github.com/libressl/openbsd/tree/ce488b78e0bd994780569df718596b9776ff681a/src/lib/libcrypto/asn1). Closes when: compared with the console.
 - [CRYPTO_memcmp](../../../core/libs/prx/libSceLibreSsl3/Export.cpp) follows the public [LibreSSL signature and equality contract](https://man.openbsd.org/CRYPTO_memcmp.3), without PS5 verification. The exact nonzero result for unequal buffers is unspecified by that contract. Content-independent execution of its volatile byte reads still depends on the compiler; inspect optimized code when changing toolchains. Closes when: measured on a PS5 and the supported toolchains' generated code is checked.
@@ -22,7 +28,7 @@
 
 ### Additional callable export inventory
 
-- [Additional exports](../../../core/libs/prx/libSceLibreSsl3/AdditionalExports.cpp) declare 174 callable exports: 164 named and 10 known only by NID. Every entry throws. Parameterless `int` declarations are unknown-signature placeholders, not verified ABI contracts. Names/NIDs match the 13.60 export table. No functional implementation or title unblock is claimed.
+- [Additional exports](../../../core/libs/prx/libSceLibreSsl3/AdditionalExports.cpp) declare 175 callable exports: 165 named and 10 known only by NID. Every entry throws. Parameterless `int` declarations are unknown-signature placeholders, not verified ABI contracts. Names/NIDs match the 13.60 export table. No functional implementation or title unblock is claimed.
 
 | Name | NID |
 | --- | --- |
@@ -63,6 +69,7 @@
 | `unknown` | `A-Hs-8mau+8` |
 | `ERR_load_X509_strings` | `A0lZtFjhcTw` |
 | `tls_config_set_key_mem` | `A65b+ZhOt9k` |
+| `BN_clear_free` | `ABcJv8S1KEM` |
 | `unknown` | `AiNud8LR8B4` |
 | `X509_cmp_current_time` | `Ax+Uu++rnrA` |
 | `SSL_CTX_set_timeout` | `BBOgwZLvXHA` |

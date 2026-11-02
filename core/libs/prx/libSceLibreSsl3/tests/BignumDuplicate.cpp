@@ -16,7 +16,7 @@ namespace {
 
 void Require(bool condition, std::source_location location = std::source_location::current()) {
     if (condition) return;
-    std::fprintf(stderr, "BIGNUM lifetime check failed at line %u\n", location.line());
+    std::fprintf(stderr, "BIGNUM duplication check failed at line %u\n", location.line());
     std::abort();
 }
 
@@ -58,6 +58,15 @@ void* APS5_VABI UnexpectedAlign_nid_no_patch(std::size_t, std::size_t) { throw s
 void* APS5_VABI UnexpectedRealign_nid_no_patch(void*, std::size_t, std::size_t) { throw std::runtime_error("unexpected aligned reallocation"); }
 int APS5_VABI UnexpectedPosixAlign_nid_no_patch(void**, std::size_t, std::size_t) { throw std::runtime_error("unexpected posix_memalign"); }
 
+void ReleaseCopy(LibreSsl3Bignum* copy) {
+    if (copy->data) {
+        std::memset(copy->data, 0, static_cast<std::size_t>(copy->capacity) * sizeof(*copy->data));
+        free_nid_postfix(copy->data);
+    }
+    std::memset(copy, 0, sizeof(*copy));
+    free_nid_postfix(copy);
+}
+
 void Copies() {
     std::array<std::uint64_t, 65> words;
     for (std::size_t index = 0; index < words.size(); ++index)
@@ -68,19 +77,19 @@ void Copies() {
                 LibreSsl3Bignum source {words.data(), top, 65, neg, flags};
                 const auto before = source;
                 auto* copy = BN_dup_nid_postfix(&source);
-                Require(copy && copy != &source && copy->top == top && copy->dmax == top);
-                Require(copy->neg == neg && copy->flags == (1 | (flags & 4)));
+                Require(copy && copy != &source && copy->top == top && copy->capacity == top);
+                Require(copy->negative == neg && copy->flags == (1 | (flags & 4)));
                 Require(std::memcmp(&source, &before, sizeof(source)) == 0);
-                if (top == 0) Require(copy->d == nullptr);
+                if (top == 0) Require(copy->data == nullptr);
                 else {
-                    Require(copy->d && copy->d != source.d);
-                    Require(std::equal(copy->d, copy->d + top, words.begin()));
+                    Require(copy->data && copy->data != source.data);
+                    Require(std::equal(copy->data, copy->data + top, words.begin()));
                     const auto original = words[0];
-                    copy->d[0] ^= 1;
+                    copy->data[0] ^= 1;
                     Require(words[0] == original);
                 }
                 const int previousFrees = frees;
-                BN_clear_free_nid_postfix(copy);
+                ReleaseCopy(copy);
                 Require(frees == previousFrees + 1 + (top != 0));
                 Require(allocations.empty());
             }
@@ -88,30 +97,8 @@ void Copies() {
     }
     LibreSsl3Bignum zero {};
     auto* copy = BN_dup_nid_postfix(&zero);
-    Require(copy && copy->d == nullptr && copy->top == 0 && copy->dmax == 0 && copy->neg == 0 && copy->flags == 1);
-    BN_clear_free_nid_postfix(copy);
-}
-
-void Ownership() {
-    for (int flags = 0; flags < 8; ++flags) {
-        for (const int top : {0, 1, 4}) {
-            std::array<std::uint64_t, 4> borrowed {1, 2, 3, 4};
-            LibreSsl3Bignum local {};
-            auto* value = (flags & 1) ? static_cast<LibreSsl3Bignum*>(malloc_nid_postfix(sizeof(local))) : &local;
-            auto* words = (flags & 2) ? borrowed.data() : static_cast<std::uint64_t*>(malloc_nid_postfix(sizeof(borrowed)));
-            std::memcpy(words, borrowed.data(), sizeof(borrowed));
-            *value = {words, top, 4, 1, flags};
-            const int previousFrees = frees;
-            BN_clear_free_nid_postfix(value);
-            Require(frees == previousFrees + ((flags & 1) != 0) + ((flags & 2) == 0));
-            Require((borrowed == std::array<std::uint64_t, 4>{1, 2, 3, 4}));
-            if (!(flags & 1)) {
-                const std::array<unsigned char, sizeof(local)> cleared {};
-                Require(std::memcmp(&local, cleared.data(), sizeof(local)) == 0);
-            }
-            Require(allocations.empty());
-        }
-    }
+    Require(copy && copy->data == nullptr && copy->top == 0 && copy->capacity == 0 && copy->negative == 0 && copy->flags == 1);
+    ReleaseCopy(copy);
 }
 
 void Failures() {
@@ -139,23 +126,21 @@ void Failures() {
     const auto error = ERR_peek_error_nid_postfix();
     const int attempted = allocationsAttempted;
     Require(BN_dup_nid_postfix(nullptr) == nullptr);
-    BN_clear_free_nid_postfix(nullptr);
     Require(allocationsAttempted == attempted && ERR_get_error_nid_postfix() == error);
 }
 
 void InvalidStorage() {
-    for (auto source : {LibreSsl3Bignum{nullptr, 1, 1, 0, 0}, LibreSsl3Bignum{nullptr, 1, 0, 0, 0}}) {
+    std::uint64_t word = 42;
+    for (auto source : {LibreSsl3Bignum{nullptr, 1, 1, 0, 0}, LibreSsl3Bignum{nullptr, 1, 0, 0, 0},
+                        LibreSsl3Bignum{&word, 1, 0, 0, 0}, LibreSsl3Bignum{&word, 1, -1, 0, 0}}) {
+        const auto before = source;
+        const int attempted = allocationsAttempted;
         bool thrown = false;
         try { BN_dup_nid_postfix(&source); }
         catch (const std::invalid_argument&) { thrown = true; }
-        Require(thrown && source.top == 1 && source.d == nullptr);
+        Require(thrown && std::memcmp(&source, &before, sizeof(source)) == 0);
+        Require(allocationsAttempted == attempted && word == 42);
     }
-    std::uint64_t word = 42;
-    LibreSsl3Bignum source {&word, 1, -1, 0, 0};
-    bool thrown = false;
-    try { BN_clear_free_nid_postfix(&source); }
-    catch (const std::invalid_argument&) { thrown = true; }
-    Require(thrown && word == 42 && source.d == &word && source.dmax == -1);
 }
 
 }
@@ -167,9 +152,8 @@ int main() {
         reinterpret_cast<void*>(UnexpectedPosixAlign_nid_no_patch)};
     ApplicationHeapRegister_nid_no_patch(api.data());
     Copies();
-    Ownership();
     Failures();
     InvalidStorage();
     Require(allocations.empty());
-    std::puts("libSceLibreSsl3 BIGNUM lifetime tests passed");
+    std::puts("libSceLibreSsl3 BIGNUM duplication tests passed");
 }

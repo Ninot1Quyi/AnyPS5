@@ -5,14 +5,6 @@
 #include "prx/libSceLibreSsl/include/Api.hpp"
 #include "prx/libSceLibreSsl3/include/Cipher.hpp"
 
-struct LibreSsl3Bignum {
-    std::uint64_t* d;
-    std::int32_t top;
-    std::int32_t dmax;
-    std::int32_t neg;
-    std::int32_t flags;
-};
-
 extern "C" {
 
 int APS5_VABI ASN1_INTEGER_free_nid_postfix(void);
@@ -26,8 +18,8 @@ int APS5_VABI DH_get0_pqg_nid_postfix(void);
 int APS5_VABI DSA_get0_key_nid_postfix(void);
 int APS5_VABI DSA_get0_pqg_nid_postfix(void);
 int APS5_VABI EC_KEY_up_ref_nid_postfix(LibreSsl3EcKey* key);
-int APS5_VABI ERR_load_crypto_strings_nid_postfix(void);
-int APS5_VABI ERR_peek_last_error_nid_postfix(void);
+void APS5_VABI ERR_load_crypto_strings_nid_postfix();
+std::uint64_t APS5_VABI ERR_peek_last_error_nid_postfix();
 int APS5_VABI ERR_print_errors_cb_nid_postfix(void);
 int APS5_VABI EVP_CIPHER_CTX_set_flags_nid_postfix(void);
 int APS5_VABI EVP_DigestInit_nid_postfix(void);
@@ -62,7 +54,7 @@ int APS5_VABI OBJ_txt2obj_nid_postfix(void);
 int APS5_VABI OCSP_CERTID_free_nid_postfix(void);
 int APS5_VABI OCSP_cert_to_id_nid_postfix(void);
 int APS5_VABI OCSP_resp_find_status_nid_postfix(void);
-int APS5_VABI OpenSSL_version_nid_postfix(void);
+const char* APS5_VABI OpenSSL_version_nid_postfix(int type);
 int APS5_VABI PKCS7_free_nid_postfix(void);
 int APS5_VABI PKCS8_PRIV_KEY_INFO_free_nid_postfix(void);
 int APS5_VABI RSA_check_key_nid_postfix(void);
@@ -105,7 +97,7 @@ unsigned char* APS5_VABI SHA1_nid_postfix(const unsigned char* data, std::size_t
 
 int APS5_VABI BIO_clear_flags_nid_postfix();
 int APS5_VABI BIO_set_flags_nid_postfix();
-void APS5_VABI BN_clear_free_nid_postfix(LibreSsl3Bignum* value);
+int APS5_VABI BN_clear_free_nid_postfix();
 LibreSsl3Bignum* APS5_VABI BN_dup_nid_postfix(const LibreSsl3Bignum* source);
 int APS5_VABI ERR_func_error_string_nid_postfix();
 int APS5_VABI EVP_CIPHER_iv_length_nid_postfix(const LibreSsl3EvpCipher* cipher);
