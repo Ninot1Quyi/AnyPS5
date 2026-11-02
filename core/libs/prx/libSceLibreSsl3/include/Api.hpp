@@ -5,6 +5,14 @@
 #include "prx/libSceLibreSsl/include/Api.hpp"
 #include "prx/libSceLibreSsl3/include/Cipher.hpp"
 
+struct LibreSsl3Bignum {
+    std::uint64_t* d;
+    std::int32_t top;
+    std::int32_t dmax;
+    std::int32_t neg;
+    std::int32_t flags;
+};
+
 extern "C" {
 
 int APS5_VABI ASN1_INTEGER_free_nid_postfix(void);
@@ -97,8 +105,8 @@ unsigned char* APS5_VABI SHA1_nid_postfix(const unsigned char* data, std::size_t
 
 int APS5_VABI BIO_clear_flags_nid_postfix();
 int APS5_VABI BIO_set_flags_nid_postfix();
-int APS5_VABI BN_clear_free_nid_postfix();
-int APS5_VABI BN_dup_nid_postfix();
+void APS5_VABI BN_clear_free_nid_postfix(LibreSsl3Bignum* value);
+LibreSsl3Bignum* APS5_VABI BN_dup_nid_postfix(const LibreSsl3Bignum* source);
 int APS5_VABI ERR_func_error_string_nid_postfix();
 int APS5_VABI EVP_CIPHER_iv_length_nid_postfix(const LibreSsl3EvpCipher* cipher);
 int APS5_VABI EVP_CIPHER_key_length_nid_postfix(const LibreSsl3EvpCipher* cipher);

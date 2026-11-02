@@ -6,6 +6,8 @@
 
 ### Functional
 
+- [BN_dup and BN_clear_free](../../../core/libs/prx/libSceLibreSsl3/src/BignumLifetime.cpp) have no console ABI, allocator or error-queue verification. The 24-byte BIGNUM layout, 64-bit limbs, flags and allocation/error behavior follow LibreSSL 4.0.0 [bn_lib.c](https://github.com/libressl/openbsd/blob/ce488b78e0bd994780569df718596b9776ff681a/src/lib/libcrypto/bn/bn_lib.c) and `bn_local.h`. Copies use the guest heap and preserve only the constant-time flag; release clears the full owned limb capacity and respects borrowed storage and caller-owned structures. Invalid positive limb counts with missing or insufficient storage, and release of owned limbs with a negative capacity, throw instead of accessing invalid memory. The parent library's BIGNUM constructors remain unimplemented, so interoperability with them is not validated. Closes when: compared with console layouts, ownership and errors.
+
 - [ASN.1 integer decoding](../../../core/libs/prx/libSceLibreSsl3/src/IntegerDecoder.cpp) - nothing is checked on a console, and the console's application-heap ABI is unverified. Rejections, allocation failures, their error codes and the old output follow [13.42 native-PC evidence](https://github.com/boykopovar/AnyPS5/pull/10948#issuecomment-6412137728) from a recording allocator. Nonnegative null input faults natively and throws here. Error combinations the evidence does not cover and content over `INT_MAX` bytes follow [LibreSSL 4.0.0](https://github.com/libressl/openbsd/tree/ce488b78e0bd994780569df718596b9776ff681a/src/lib/libcrypto/asn1). Closes when: compared with the console.
 - [CRYPTO_memcmp](../../../core/libs/prx/libSceLibreSsl3/Export.cpp) follows the public [LibreSSL signature and equality contract](https://man.openbsd.org/CRYPTO_memcmp.3), without PS5 verification. The exact nonzero result for unequal buffers is unspecified by that contract. Content-independent execution of its volatile byte reads still depends on the compiler; inspect optimized code when changing toolchains. Closes when: measured on a PS5 and the supported toolchains' generated code is checked.
 - [MD5 and SHA1](../../../core/libs/prx/libSceLibreSsl3/src/Digest.cpp) (libSceLibreSsl3) - follow LibreSSL's [md5.c, sha1.c](https://github.com/libressl/openbsd/tree/bc9483725c5815efb64b6d9acc52fc5fba139212/src/lib/libcrypto) and hash through libSceLibreSsl's `MD5_*` and `SHA1_*`. A null digest buffer, which LibreSSL 4.0.0 does not check, throws. Nothing is checked on the console
@@ -20,7 +22,7 @@
 
 ### Additional callable export inventory
 
-- [Additional exports](../../../core/libs/prx/libSceLibreSsl3/AdditionalExports.cpp) declare 176 callable exports: 50 named and 126 known only by NID. Every entry throws. Parameterless `int` declarations are unknown-signature placeholders, not verified ABI contracts. Names/NIDs match the 13.60 export table. No functional implementation or title unblock is claimed.
+- [Additional exports](../../../core/libs/prx/libSceLibreSsl3/AdditionalExports.cpp) declare 174 callable exports: 164 named and 10 known only by NID. Every entry throws. Parameterless `int` declarations are unknown-signature placeholders, not verified ABI contracts. Names/NIDs match the 13.60 export table. No functional implementation or title unblock is claimed.
 
 | Name | NID |
 | --- | --- |
@@ -61,7 +63,6 @@
 | `unknown` | `A-Hs-8mau+8` |
 | `ERR_load_X509_strings` | `A0lZtFjhcTw` |
 | `tls_config_set_key_mem` | `A65b+ZhOt9k` |
-| `BN_clear_free` | `ABcJv8S1KEM` |
 | `unknown` | `AiNud8LR8B4` |
 | `X509_cmp_current_time` | `Ax+Uu++rnrA` |
 | `SSL_CTX_set_timeout` | `BBOgwZLvXHA` |
@@ -106,7 +107,6 @@
 | `EVP_PKEY_sign` | `QhYzE+Jdvuk` |
 | `X509_get_signature_nid` | `QnjD8S6Rgk4` |
 | `ECDSA_SIG_new` | `R3NyckUcClU` |
-| `BN_dup` | `RMhEgJs6KLI` |
 | `EVP_sha512_256` | `Sea+FOS2GOI` |
 | `tls_config_set_ca_mem` | `Sqn+7yQmQWc` |
 | `EVP_PKEY_derive_init` | `Ssfu1yw4Em4` |
