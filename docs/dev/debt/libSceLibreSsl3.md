@@ -2,6 +2,8 @@
 
 ### Functional
 
+- [HMAC_CTX_new and HMAC_CTX_free](../../../core/libs/prx/libSceLibreSsl3/src/HmacContext.cpp) have no console ABI or allocator verification. The opaque factory and destructor follow LibreSSL 4.0.0 [hmac.c](https://github.com/libressl/openbsd/blob/ce488b78e0bd994780569df718596b9776ff681a/src/lib/libcrypto/hmac/hmac.c): zero allocation, null on allocation failure without a new error, and cleanup before freeing non-null contexts. Objects use the guest heap and the parent library's context layout because this module forwards HMAC operations to that library. LibreSSL 4.0.0 private contexts and digest descriptors have different layouts and cannot be mixed with these objects. Parent HMAC limitations remain; interoperability with console-created contexts and descriptors is unverified. Closes when: compared with console ownership, layout and lifetime behavior.
+
 - [OpenSSL_version](../../../core/libs/prx/libSceLibreSsl3/Export.cpp) - other firmware revisions are unverified. Selectors 0 through 5 follow the public firmware 13.40 measurements in [discussion #8981](https://github.com/boykopovar/AnyPS5/discussions/8981#discussioncomment-19111214); unknown selectors follow LibreSSL 4.0.0 and return `not available`. No independent console test was run.
 
 - [ERR_load_crypto_strings and ERR_peek_last_error](../../../core/libs/prx/libSceLibreSsl3/Export.cpp) have no console execution verification. [Firmware 13.42 modules run on a PC](https://github.com/boykopovar/AnyPS5/pull/9535#issuecomment-6407060914) retained numeric-only output after loaders and matched queue order/overflow; whether the two firmware modules share a queue was not tested. This implementation reads libSceLibreSsl's calling-thread queue. `ERR_print_errors_cb` remains throwing because guest thread identifiers and diagnostic metadata are unverified.
@@ -28,7 +30,7 @@
 
 ### Additional callable export inventory
 
-- [Additional exports](../../../core/libs/prx/libSceLibreSsl3/AdditionalExports.cpp) declare 175 callable exports: 165 named and 10 known only by NID. Every entry throws. Parameterless `int` declarations are unknown-signature placeholders, not verified ABI contracts. Names/NIDs match the 13.60 export table. No functional implementation or title unblock is claimed.
+- [Additional exports](../../../core/libs/prx/libSceLibreSsl3/AdditionalExports.cpp) declare 173 callable exports: 163 named and 10 known only by NID. Every entry throws. Parameterless `int` declarations are unknown-signature placeholders, not verified ABI contracts. Names/NIDs match the 13.60 export table. No functional implementation or title unblock is claimed.
 
 | Name | NID |
 | --- | --- |
@@ -98,7 +100,6 @@
 | `SSL_CTX_add1_chain_cert` | `L897DuAuXKk` |
 | `X509_print` | `LA1MlgDx80o` |
 | `tls_config_free` | `LL8N+X6DA-4` |
-| `HMAC_CTX_new` | `LcxutSyn11o` |
 | `X509_CRL_get0_by_cert` | `LdGe2IfIlpI` |
 | `ERR_load_PEM_strings` | `M7ze0mz2jQM` |
 | `tls_error` | `N+G3Gxequt0` |
@@ -130,7 +131,6 @@
 | `EVP_get_digestbyname` | `Wm24hhTLqWM` |
 | `SSL_SESSION_set_time` | `XG3hIzt9VXY` |
 | `X509_set_issuer_name` | `XK3FmaTS6pg` |
-| `HMAC_CTX_free` | `YAxGqtnKQFY` |
 | `X509_add_ext` | `YJ7bfxMHniE` |
 | `tls_connect_socket` | `ZERQN8ewpgk` |
 | `SSL_CTX_set_quic_method` | `ZFeTGo4ybcw` |
